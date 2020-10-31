@@ -20,6 +20,16 @@
   font-weight: bold;
 }
 
+#startTalking {
+  position: absolute;
+  left:20px;
+  top:20px;
+  z-index: 2;
+  background-color: rgb(219, 219, 219);
+  padding: 10px;
+}
+
+
 .textEntry {
   min-width: 305px;
   min-height: 200px;

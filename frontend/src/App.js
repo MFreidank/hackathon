@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './assests/css/App.css';
-import Amplify, { Auth, Route53 } from 'aws-amplify';
+import Amplify from 'aws-amplify';
 import awsconfig from './aws-exports';
 import AWS from 'aws-sdk';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader'
@@ -27,13 +27,15 @@ function createScene() {
   renderer.shadowMap.enabled = true;
   renderer.setClearColor(0x33334d);
   renderer.domElement.id = 'renderCanvas';
-  document.getElementById('root').appendChild(renderer.domElement)
-  //document.body.appendChild(renderer.domElement);
+  document.getElementById('container').appendChild(renderer.domElement)
 
   // Env map
   new THREE.TextureLoader()
-    .setPath('assets/')
-    .load('images/machine_shop.jpg', hdrEquirect => {
+    .load('assets/images/machine_shop.jpg', hdrEquirect => {
+
+      const pmremGenerator = new THREE.PMREMGenerator(renderer);
+      pmremGenerator.compileEquirectangularShader();
+
       const hdrCubeRenderTarget = pmremGenerator.fromEquirectangular(
         hdrEquirect
       );
@@ -41,10 +43,9 @@ function createScene() {
       pmremGenerator.dispose();
 
       scene.environment = hdrCubeRenderTarget.texture;
+
     });
 
-  const pmremGenerator = new THREE.PMREMGenerator(renderer);
-  pmremGenerator.compileEquirectangularShader();
 
   // Camera
   const camera = new THREE.PerspectiveCamera(
@@ -83,7 +84,7 @@ function createScene() {
 
   // Lights
   const hemiLight = new THREE.HemisphereLight(0xffffff, 0x000000, 0.6);
-  hemiLight.position.set(0, 1, 0);
+  hemiLight.position.set(0, 200, 0);
   hemiLight.intensity = 0.6;
   scene.add(hemiLight);
 
@@ -618,13 +619,14 @@ function enableDragDrop(className) {
 }
 
 
-async function main() {
+async function main(callback) {
 
-  const credentials = await Auth.currentCredentials();
+  window.AWS.config.region = 'eu-west-1';
+  window.AWS.config.credentials = new AWS.CognitoIdentityCredentials({
+    IdentityPoolId: 'eu-west-1:292b851e-196b-4148-b7fd-ad6c711be793',
+  });
 
-
-  const polly = new AWS.Polly({ credentials, region: awsconfig.aws_project_region });
-
+  const polly = new AWS.Polly();
 
 
   // Initialize AWS and create Polly service objects
@@ -746,7 +748,9 @@ async function main() {
     onStopSpeech
   );
 
-  document.getElementById('loadScreen').style.display = 'none';
+  callback(true);
+
+  document.getElementById('renderCanvas').style.display = '';
 
   await speechInit;
 
@@ -763,13 +767,13 @@ const speakers = new Map([['Luke', undefined]]);
 
 function App() {
 
+  const [loaderScreen, setLoaderScreen] = useState(false);
+
   function handleClick(e) {
     e.preventDefault();
-    console.log("speakers", speakers)
-
 
     const {name, host} = getCurrentHost(speakers);
-    const speechInput = 'Hello, my name is Grace.'
+    const speechInput = "<speak>Hi Friends. Here is a number <w role='amazon:VBD'>read</w>as a cardinal number: <say-as interpret-as='cardinal'>12345</say-as>. Here is a word spelled out: <say-as interpret-as='spell-out'>hello</say-as>.</speak>"
 
     const emotes = host.AnimationFeature.getAnimations('Emote');
     console.log("emotes", emotes)
@@ -779,21 +783,27 @@ function App() {
     }).catch(e => {
       console.log("Error TexttoSpeech");
     });
-    host.GestureFeature.playGesture('Emote', "cheer");
+    //host.GestureFeature.playGesture('Emote', "cheer");
   }
 
   useEffect(() => {
-    main();
+    main(setLoaderScreen);
   }, []); // Only re-run the effect if count changes
 
   return (
-    <div>
+    <div id="container" style={{height:"100%"}}>
+      {!loaderScreen &&
       <div id="loadScreen">
         <div id="loader"></div>
       </div>
-      <a href="#" onClick={handleClick}>
-        Click me
-      </a>
+      }
+      {loaderScreen &&
+      <div id="startTalking">
+        <a href="#" onClick={handleClick}>
+          Start session....
+        </a>
+      </div>
+      }
     </div>
   );
 }
