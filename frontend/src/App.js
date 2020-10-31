@@ -5,6 +5,8 @@ import awsconfig from './aws-exports';
 import AWS from 'aws-sdk';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import recording from './assests/images/record.gif';
+import moment from 'moment';
 
 import useScript from './hooks/useScript';
 
@@ -16,8 +18,8 @@ function createScene() {
   // Base scene
   const scene = new THREE.Scene();
   const clock = new THREE.Clock();
-  scene.background = new THREE.Color(0x33334d);
-  scene.fog = new THREE.Fog(0x33334d, 0, 10);
+  scene.background = new THREE.Color("rgb(0, 142, 174)");
+  scene.fog = new THREE.Fog(0x33334d, 4, 10);
 
   // Renderer
   const renderer = new THREE.WebGLRenderer({antialias: true});
@@ -109,7 +111,7 @@ function createScene() {
 
   // Environment
   const groundMat = new THREE.MeshStandardMaterial({
-    color: 0x808080,
+    color: "rgb(0, 142, 174)",
     depthWrite: false,
   });
   groundMat.metalness = 0;
@@ -490,7 +492,7 @@ function createHost(
 
 // Return the host whose name matches the text of the current tab
 function getCurrentHost() {
-  const name = "Luke";
+  const name = "Maya";
 
   return {name, host: speakers.get(name)};
 }
@@ -588,37 +590,6 @@ function initializeUX(speakers) {
   // toggleHost({target: tab});
 }
 
-function enableDragDrop(className) {
-  const elements = document.getElementsByClassName(className);
-
-  for (let i = 0, l = elements.length; i < l; i += 1) {
-    const dropArea = elements[i];
-
-    // Copy contents of files into the text input once they are read
-    const fileReader = new FileReader();
-    fileReader.onload = evt => {
-      dropArea.value = evt.target.result;
-    };
-
-    // Drag and drop listeners
-    dropArea.addEventListener('dragover', evt => {
-      evt.stopPropagation();
-      evt.preventDefault();
-      evt.dataTransfer.dropEffect = 'copy';
-    });
-
-    dropArea.addEventListener('drop', evt => {
-      evt.stopPropagation();
-      evt.preventDefault();
-
-      // Read the first file that was dropped
-      const [file] = evt.dataTransfer.files;
-      fileReader.readAsText(file, 'UTF-8');
-    });
-  }
-}
-
-
 async function main(callback) {
 
   window.AWS.config.region = 'eu-west-1';
@@ -641,8 +612,8 @@ async function main(callback) {
 
   // Define the glTF assets that will represent the host
   const characterFile1 =
-    './assets/glTF/characters/adult_male/luke/luke.gltf';
-  const animationPath1 = './assets/glTF/animations/adult_male';
+    './assets/glTF/characters/adult_female/maya/maya.gltf';
+  const animationPath1 = './assets/glTF/animations/adult_female';
   const animationFiles = [
     'stand_idle.glb',
     'lipsync.glb',
@@ -656,8 +627,8 @@ async function main(callback) {
   const poiConfigFile = 'poi.json';
   const audioAttachJoint1 = 'chardef_c_neckB'; // Name of the joint to attach audio to
   const lookJoint1 = 'charjx_c_look'; // Name of the joint to use for point of interest target tracking
-  const voice1 = 'Matthew'; // Polly voice. Full list of available voices at: https://docs.aws.amazon.com/polly/latest/dg/voicelist.html
-  const voiceEngine = 'neural'; // Neural engine is not available for all voices in all regions: https://docs.aws.amazon.com/polly/latest/dg/NTTS-main.html
+  const voice1 = 'Joanna'; // Polly voice. Full list of available voices at: https://docs.aws.amazon.com/polly/latest/dg/voicelist.html
+  const voiceEngine = 'Neural'; // Neural engine is not available for all voices in all regions: https://docs.aws.amazon.com/polly/latest/dg/NTTS-main.html
 
   // Set up the scene and host
   const {scene, camera, clock} = createScene();
@@ -754,35 +725,53 @@ async function main(callback) {
 
   await speechInit;
 
-  speakers.set('Luke', host1);
+  speakers.set('Maya', host1);
 
   initializeUX();
 }
 
+function getTimeAndDate(){
+  var now = moment();
+  return now.format("H m on dddd do of MMMM YYYY")
+}
 
 Amplify.configure(awsconfig);
 
 const renderFn = [];
-const speakers = new Map([['Luke', undefined]]);
+const speakers = new Map([['Maya', undefined]]);
 
 function App() {
 
   const [loaderScreen, setLoaderScreen] = useState(false);
-
+  const [isRecording, setRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState("00m:00s");
+  const [startButtonText, setStartButtonText] = useState("Start your diary session");
   function handleClick(e) {
     e.preventDefault();
 
     const {name, host} = getCurrentHost(speakers);
-    const speechInput = "<speak>Hi Friends. Here is a number <w role='amazon:VBD'>read</w>as a cardinal number: <say-as interpret-as='cardinal'>12345</say-as>. Here is a word spelled out: <say-as interpret-as='spell-out'>hello</say-as>.</speak>"
+    const speechInput = "<speak>Dear Emily. Welcome back to your daily diary session. Let me note the time. It is now "+getTimeAndDate()+". For your convience I will record this session with video and audio. Let's begin. How are you today?</speak>"
 
     const emotes = host.AnimationFeature.getAnimations('Emote');
     console.log("emotes", emotes)
 
-    host.TextToSpeechFeature.play(speechInput).then(response => {
-      console.log("Completed");
-    }).catch(e => {
-      console.log("Error TexttoSpeech");
-    });
+    if(!isRecording) {
+      setRecording(true)
+      setStartButtonText("Stop your diary session")
+
+      host.TextToSpeechFeature.play(speechInput).then(response => {
+        console.log("Completed");
+      }).catch(e => {
+        console.log("Error TexttoSpeech");
+      });
+
+    } else {
+      setRecording(false)
+      setStartButtonText("Start your diary session")
+      host.TextToSpeechFeature.stop();
+
+    }
+
     //host.GestureFeature.playGesture('Emote', "cheer");
   }
 
@@ -799,9 +788,15 @@ function App() {
       }
       {loaderScreen &&
       <div id="startTalking">
-        <a href="#" onClick={handleClick}>
-          Start session....
-        </a>
+        <button onClick={handleClick} className="speechButton">
+          {startButtonText}
+        </button>
+        <p>Recording time: {recordingTime}</p>
+      </div>
+      }
+      {(loaderScreen && isRecording) &&
+      <div id="recording">
+        <img src={recording} alt="recording" />
       </div>
       }
     </div>

@@ -9,4 +9,4 @@ DayOne Hackathon
 http://frontend-20201030193748-hostingbucket-dev.s3-website-eu-west-1.amazonaws.com/
 
 Our Avatar
-![Avatar](https://raw.githubusercontent.com/onnobos/hackathon/main/Avatar.png)
+![Avatar](https://raw.githubusercontent.com/onnobos/hackathon/main/load_screen.png)
