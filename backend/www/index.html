@@ -1,0 +1,46 @@
+<html>
+
+<head>
+    <meta content="text/html;charset=utf-8" http-equiv="Content-Type">
+    <meta content="utf-8" http-equiv="encoding">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/2.8.0/Chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/socket.io-client@2/dist/socket.io.js"></script>
+</head>
+
+<body>
+
+    <div>
+        <span><button onclick="ping()">Ping</button></span>
+    </div>
+    <div>
+        <span>pong:</span> <span id="pong"></span>
+    </div>
+    <div>
+        <span>counter:</span> <span id="counter"></span>
+    </div>
+
+    <script>
+
+        console.log("setting up socket connection");
+
+        var socket = io.connect(':8080');
+
+        socket.on('pong', function (msg) {
+            console.log('got pong value: ', msg);
+            document.getElementById("pong").innerHTML = msg;
+        });
+
+        socket.on('send_count', function (msg) {
+            console.log('got count value: ', msg);
+            document.getElementById("counter").innerHTML = msg;
+        });
+
+        function ping() {
+            socket.send('ping');
+            console.log('ping sent');
+        }
+
+    </script>
+</body>
+
+</html>
