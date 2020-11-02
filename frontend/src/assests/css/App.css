@@ -51,6 +51,7 @@
   border-width: 0px;
   border-radius: 5px;
   font-weight: bold;
+  cursor:pointer;
 }
 
 .gestureButton {
@@ -104,14 +105,11 @@
   justify-content: center;
   border: 16px solid #3498db38;
   border-radius: 80%;
-  border-top: 16px solid #FFF;
+  border-top: 16px solid gray;
   width: 25px;
   height: 25px;
   -webkit-animation: spin 1.5s linear infinite;
   animation: spin 1.5s linear infinite;
-  position: fixed;
-  top:14%;
-  margin-left: 8%;
 }
 
 @-webkit-keyframes spin {
