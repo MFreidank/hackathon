@@ -8,10 +8,233 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import recording from './assests/images/record.gif';
 import moment from 'moment';
 
-import useScript from './hooks/useScript';
+const crypto            = require('crypto'); // tot sign our pre-signed URL
+const audioUtils        = require('./assests/libs/audioUtils');  // for encoding audio data as PCM
+const v4                = require('./assests/libs/aws-signature-v4'); // to generate our pre-signed URL
+const marshaller        = require("@aws-sdk/eventstream-marshaller"); // for converting binary event stream messages to and from JSON
+const util_utf8_node    = require("@aws-sdk/util-utf8-node"); // utilities for encoding and decoding UTF8
+const mic               = require('microphone-stream'); // collect microphone input as a stream of raw bytes
+
+// our converter between binary event streams messages and JSON
 
 const THREE = window.THREE
 const HOST = window.HOST
+
+window.AWS.config.region = 'eu-west-1';
+window.AWS.config.credentials = new AWS.CognitoIdentityCredentials({
+  IdentityPoolId: 'eu-west-1:292b851e-196b-4148-b7fd-ad6c711be793',
+});
+
+console.log("window.AWS.config.credentials", window.AWS.config.credentials)
+
+class Streamer {
+
+  inputSampleRate;
+  transcription = "";
+  socket;
+  micStream;
+  socketError = false;
+  transcribeException = false;
+  eventStreamMarshaller = new marshaller.EventStreamMarshaller(util_utf8_node.toUtf8, util_utf8_node.fromUtf8);
+
+
+  constructor() {
+    // our global variables for managing state
+    this.languageCode = "en-US";
+    this.sampleRate = "44100";
+  }
+
+  startStreaming(){
+    // first we get the microphone input from the browser (as a promise)...
+    window.navigator.mediaDevices.getUserMedia({
+            video: false,
+            audio: true
+        })
+        // ...then we convert the mic stream to binary event stream messages when the promise resolves
+        .then((userMediaStream)=>{this.streamAudioToWebSocket(userMediaStream)})
+        .catch(function (error) {
+          console.error(error, 'There was an error streaming your audio to Amazon Transcribe. Please try again.')
+        });
+  }
+
+  streamAudioToWebSocket(userMediaStream) {
+      //let's get the mic input from the browser, via the microphone-stream module
+
+      const self = this;
+
+      self.micStream = new mic();
+
+
+      self.micStream.on("format", function(data) {
+          self.inputSampleRate = data.sampleRate;
+      });
+
+      self.micStream.setStream(userMediaStream);
+
+
+      // Pre-signed URLs are a way to authenticate a request (or WebSocket connection, in this case)
+      // via Query Parameters. Learn more: https://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-query-string-auth.html
+      let url = self.createPresignedUrl();
+
+      //open up our WebSocket connection
+      self.socket = new WebSocket(url);
+      self.socket.binaryType = "arraybuffer";
+
+      let sampleRate = 0;
+
+      // when we get audio data from the mic, send it to the WebSocket if possible
+      self.socket.onopen = function() {
+          self.micStream.on('data', function(rawAudioChunk) {
+              // the audio stream is raw audio bytes. Transcribe expects PCM with additional metadata, encoded as binary
+              let binary = self.convertAudioToBinaryMessage(rawAudioChunk);
+
+              if (self.socket.readyState === self.socket.OPEN)
+                  self.socket.send(binary);
+          }
+      )};
+
+      // handle messages, errors, and close events
+      self.wireSocketEvents();
+  }
+
+  wireSocketEvents() {
+      // handle inbound messages from Amazon Transcribe
+
+      const self = this;
+
+      self.socket.onmessage = function (message) {
+          //convert the binary event stream message to JSON
+          let messageWrapper = self.eventStreamMarshaller.unmarshall(Buffer(message.data));
+          let messageBody = JSON.parse(String.fromCharCode.apply(String, messageWrapper.body));
+          if (messageWrapper.headers[":message-type"].value === "event") {
+              self.handleEventStreamMessage(messageBody);
+          }
+          else {
+              self.transcribeException = true;
+              console.error(messageBody.Message);
+          }
+      };
+
+      self.socket.onerror = function () {
+          self.socketError = true;
+          console.error('WebSocket connection error. Try again.');
+      };
+
+      self.socket.onclose = function (closeEvent) {
+          self.micStream.stop();
+
+          // the close event immediately follows the error event; only handle one.
+          if (!self.socketError && !self.transcribeException) {
+              if (closeEvent.code != 1000) {
+                  console.error('Streaming Exception ' + closeEvent.reason);
+              }
+          }
+      };
+  }
+
+  handleEventStreamMessage(messageJson) {
+      let results = messageJson.Transcript.Results;
+
+      if (results.length > 0) {
+          if (results[0].Alternatives.length > 0) {
+              let transcript = results[0].Alternatives[0].Transcript;
+
+              // fix encoding for accented characters
+              this.transcript = decodeURIComponent(escape(transcript));
+
+              // update the textarea with the latest result
+              console.log(this.transcription + transcript + "\n");
+
+              // if this transcript segment is final, add it to the overall transcription
+              if (!results[0].IsPartial) {
+                  //scroll the textarea down
+                  console.log("messageJson", messageJson)
+                  let words = results[0].Alternatives[0].Items;
+                  this.transcription += transcript + "\n";
+              }
+          }
+      }
+  }
+
+  closeSocket() {
+      if (this.socket.readyState === this.socket.OPEN) {
+          this.micStream.stop();
+
+          // Send an empty frame so that Transcribe initiates a closure of the WebSocket after submitting all transcripts
+          let emptyMessage = this.getAudioEventMessage(Buffer.from(new Buffer([])));
+          let emptyBuffer = this.eventStreamMarshaller.marshall(emptyMessage);
+          this.socket.send(emptyBuffer);
+      }
+  }
+
+  convertAudioToBinaryMessage(audioChunk) {
+      let raw = mic.toRaw(audioChunk);
+
+      if (raw == null)
+          return;
+
+      // downsample and convert the raw audio bytes to PCM
+      let downsampledBuffer = audioUtils.downsampleBuffer(raw, this.inputSampleRate, this.sampleRate);
+      let pcmEncodedBuffer = audioUtils.pcmEncode(downsampledBuffer);
+
+      // add the right JSON headers and structure to the message
+      let audioEventMessage = this.getAudioEventMessage(Buffer.from(pcmEncodedBuffer));
+
+      //convert the JSON object + headers into a binary event stream message
+      let binary = this.eventStreamMarshaller.marshall(audioEventMessage);
+
+      return binary;
+  }
+
+  getAudioEventMessage(buffer) {
+      // wrap the audio data in a JSON envelope
+      return {
+          headers: {
+              ':message-type': {
+                  type: 'string',
+                  value: 'event'
+              },
+              ':event-type': {
+                  type: 'string',
+                  value: 'AudioEvent'
+              }
+          },
+          body: buffer
+      };
+  }
+
+  createPresignedUrl() {
+
+      const self = this;
+
+      const {AccessKeyId, SecretKey, SessionToken} = window.AWS.config.credentials.data.Credentials;
+
+
+      let endpoint = "transcribestreaming." +  window.AWS.config.region + ".amazonaws.com:8443";
+
+      // get a preauthenticated URL that we can use to establish our WebSocket
+      return v4.createPresignedURL(
+          'GET',
+          endpoint,
+          '/stream-transcription-websocket',
+          'transcribe',
+          crypto.createHash('sha256').update('', 'utf8').digest('hex'), {
+              'key': AccessKeyId,
+              'secret': SecretKey,
+              'sessionToken': SessionToken,
+              'protocol': 'wss',
+              'expires': 15,
+              'region':  window.AWS.config.region,
+              'query': "language-code=" + self.languageCode + "&media-encoding=pcm&sample-rate=" + self.sampleRate
+          }
+      );
+  }
+
+}
+
+
+
+//// Setup 3D Character
 
 // Set up base scene
 function createScene() {
@@ -542,63 +765,9 @@ function toggleHost(evt) {
   });
 }
 
-function initializeUX(speakers) {
-  // // Enable drag/drop text files on the speech text area
-  // enableDragDrop('textEntry');
-  //
-  // // Play, pause, resume and stop the contents of the text input as speech
-  // // when buttons are clicked
-  // ['play', 'pause', 'resume', 'stop'].forEach(id => {
-  //   const button = document.getElementById(id);
-  //   button.onclick = () => {
-  //     const {name, host} = getCurrentHost(speakers);
-  //     const speechInput = document.getElementsByClassName(
-  //       `textEntry ${name}`
-  //     )[0];
-  //     host.TextToSpeechFeature[id](speechInput.value);
-  //   };
-  // });
-  //
-  // // Update the text area text with gesture SSML markup when clicked
-  // const gestureButton = document.getElementById('gestures');
-  // gestureButton.onclick = () => {
-  //   const {name, host} = getCurrentHost(speakers);
-  //   const speechInput = document.getElementsByClassName(
-  //     `textEntry ${name}`
-  //   )[0];
-  //   const gestureMap = host.GestureFeature.createGestureMap();
-  //   const gestureArray = host.GestureFeature.createGenericGestureArray([
-  //     'Gesture',
-  //   ]);
-  //   speechInput.value = HOST.aws.TextToSpeechUtils.autoGenerateSSMLMarks(
-  //     speechInput.value,
-  //     gestureMap,
-  //     gestureArray
-  //   );
-  // };
-  //
-  // // Play emote on demand with emote button
-  // const emoteSelect = document.getElementById('emotes');
-  // const emoteButton = document.getElementById('playEmote');
-  // emoteButton.onclick = () => {
-  //   const {host} = getCurrentHost(speakers);
-  //   host.GestureFeature.playGesture('Emote', emoteSelect.value);
-  // };
-  //
-  // // Initialize tab
-  // const tab = document.getElementsByClassName('tab current')[0];
-  // toggleHost({target: tab});
-}
-
 async function main(callback) {
 
-  window.AWS.config.region = 'eu-west-1';
-  window.AWS.config.credentials = new AWS.CognitoIdentityCredentials({
-    IdentityPoolId: 'eu-west-1:292b851e-196b-4148-b7fd-ad6c711be793',
-  });
-
   const polly = new AWS.Polly();
-
 
   // Initialize AWS and create Polly service objects
   const presigner = new AWS.Polly.Presigner();
@@ -727,7 +896,6 @@ async function main(callback) {
 
   speakers.set('Maya', host1);
 
-  initializeUX();
 }
 
 function getTimeAndDate(){
@@ -735,16 +903,33 @@ function getTimeAndDate(){
   return now.format("H m on dddd do of MMMM YYYY")
 }
 
+function getMinutesAndSeconds(seconds){
+  const minAndSec = [seconds / 60, seconds % 60].map(Math.floor)
+  return ((minAndSec[0] < 10) ? '0' + minAndSec[0] : minAndSec[0])+"m:"+
+         ((minAndSec[1] < 10) ? '0' + minAndSec[1] : minAndSec[1])+"s"
+}
+
 Amplify.configure(awsconfig);
 
 const renderFn = [];
 const speakers = new Map([['Maya', undefined]]);
+const streamer = new Streamer();
 
 function App() {
 
   const [loaderScreen, setLoaderScreen] = useState(false);
   const [isRecording, setRecording] = useState(false);
-  const [recordingTime, setRecordingTime] = useState("00m:00s");
+  const [recordingTime, setRecordingTime] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if(isRecording) {
+        setRecordingTime(recordingTime => recordingTime + 1);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isRecording]);
+
   const [startButtonText, setStartButtonText] = useState("Start your diary session");
   function handleClick(e) {
     e.preventDefault();
@@ -753,11 +938,12 @@ function App() {
     const speechInput = "<speak>Dear Emily. Welcome back to your daily diary session. Let me note the time. It is now "+getTimeAndDate()+". For your convience I will record this session with video and audio. Let's begin. How are you today?</speak>"
 
     const emotes = host.AnimationFeature.getAnimations('Emote');
-    console.log("emotes", emotes)
 
     if(!isRecording) {
+      setRecordingTime(0)
       setRecording(true)
       setStartButtonText("Stop your diary session")
+      streamer.startStreaming({setSpokenWords: setSpokenWords})
 
       host.TextToSpeechFeature.play(speechInput).then(response => {
         console.log("Completed");
@@ -766,6 +952,7 @@ function App() {
       });
 
     } else {
+      streamer.closeSocket();
       setRecording(false)
       setStartButtonText("Start your diary session")
       host.TextToSpeechFeature.stop();
@@ -791,7 +978,7 @@ function App() {
         <button onClick={handleClick} className="speechButton">
           {startButtonText}
         </button>
-        <p>Recording time: {recordingTime}</p>
+        <p>Recording time: {getMinutesAndSeconds(recordingTime)}</p>
       </div>
       }
       {(loaderScreen && isRecording) &&
