@@ -1,50 +1,58 @@
-<!-- Hack Test Page -->
 <html>
 
 <head>
-    <meta content="text/html;charset=utf-8" http-equiv="Content-Type">
-    <meta content="utf-8" http-equiv="encoding">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/2.8.0/Chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/socket.io-client@2/dist/socket.io.js"></script>
-    <script src="/app/client.js"></script>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
-    <script type="text/javascript">
-
-        document.addEventListener("DOMContentLoaded", function () {
-
-            console.log("setting up socket connection");
-
-            var socket = io.connect(':8080');
-
-            var uploader = new SocketIOFileUpload(socket);
-            uploader.listenOnInput(document.getElementById("siofu_input"));
-
-            uploader.addEventListener("complete", function (event) {
-                console.log(event.success);
-                console.log(event.file);
-            });
-
-            uploader.addEventListener("error", function (data) {
-                if (data.code === 1) {
-                    alert("Don't upload such a big file");
-                }
-            });
-
-            socket.on('image_path', function (msg) {
-                console.log('file was received: ', msg);
-                document.getElementById("message").innerHTML = msg;
-            });
-        }, false);
-    </script>
+    <title>Upload JPEG Files</title>
 
 </head>
 
 <body>
-    <input type="file" id="siofu_input" />
+
+    <h2>File Upload</h2>
+
+    Select file
+
+    <input type="file" id="filename" accept="image/jpeg" />
+
+    <br>
+
+    <input type="button" value="Upload" onclick="sendFile()" />
 
     <div>
         <span>message:</span> <span id="message"></span>
     </div>
+
+    <script>
+
+        var socket = io.connect(':8080');
+
+        socket.on('image_path', function (msg) {
+            console.log('file was received: ', msg);
+            document.getElementById("message").innerHTML = "<a href='" + msg + "' target='_blank'>" + msg + "</a>";
+        });
+
+        function sendFile() {
+
+            var file = document.getElementById('filename').files[0];
+            var reader = new FileReader();
+            var rawData = new ArrayBuffer();
+
+            reader.loadend = function () {
+            }
+
+            reader.onload = function (e) {
+                rawData = e.target.result;
+                socket.send(rawData);
+                console.log("the File has been transferred.")
+            }
+
+            reader.readAsArrayBuffer(file);
+        }
+
+    </script>
+
 </body>
 
 </html>
