@@ -50,7 +50,7 @@ async def print_message(sid, message):
 
     print('received file: ', file_name)
 
-    image.save('/home/ubuntu/github/hackathon/backend/www/data/' + file_name, "JPEG")
+    image.save('www/data/' + file_name, "JPEG")
 
     await sio.emit('image_path', 'http://ec2-34-251-228-120.eu-west-1.compute.amazonaws.com:8080/app/data/' + file_name)
 
