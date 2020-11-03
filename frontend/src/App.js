@@ -25,6 +25,7 @@ window.AWS.config.credentials = new AWS.CognitoIdentityCredentials({
   IdentityPoolId: 'eu-west-1:292b851e-196b-4148-b7fd-ad6c711be793',
 });
 
+
 console.log("window.AWS.config.credentials", window.AWS.config.credentials)
 
 class Streamer {
@@ -36,12 +37,16 @@ class Streamer {
   socketError = false;
   transcribeException = false;
   eventStreamMarshaller = new marshaller.EventStreamMarshaller(util_utf8_node.toUtf8, util_utf8_node.fromUtf8);
+  capturedText = [];
 
 
   constructor() {
     // our global variables for managing state
     this.languageCode = "en-US";
     this.sampleRate = "44100";
+
+    this.comprehend = new AWS.Comprehend();
+
   }
 
   startStreaming(){
@@ -132,6 +137,22 @@ class Streamer {
       };
   }
 
+  async handleDetectSentiment(sentence){
+
+    const params = {
+        LanguageCode: 'en', /* required */
+        Text: sentence /* required */
+    };
+
+    try {
+       const result = await this.comprehend.detectSentiment(params).promise()
+       return result;
+    }
+    catch(err){
+      Promise.reject(new Error(err));
+    }
+  }
+
   handleEventStreamMessage(messageJson) {
       let results = messageJson.Transcript.Results;
 
@@ -149,8 +170,10 @@ class Streamer {
               if (!results[0].IsPartial) {
                   //scroll the textarea down
                   console.log("messageJson", messageJson)
-                  let words = results[0].Alternatives[0].Items;
                   this.transcription += transcript + "\n";
+                  this.handleDetectSentiment(this.transcript).then((data)=>{
+                    console.log("handleDetectSentiment", data)
+                  })
               }
           }
       }
@@ -943,7 +966,7 @@ function App() {
       setRecordingTime(0)
       setRecording(true)
       setStartButtonText("Stop your diary session")
-      streamer.startStreaming({setSpokenWords: setSpokenWords})
+      streamer.startStreaming()
 
       host.TextToSpeechFeature.play(speechInput).then(response => {
         console.log("Completed");
