@@ -11,13 +11,12 @@ from PIL import Image, ImageMode
 import io
 
 connected = False
-counter = 0
 
 sio = socketio.AsyncServer(cors_allowed_origins='*')
 
 app = web.Application()
 
-app.add_routes([web.static('/app', 'www')])
+app.add_routes([web.static('/app', 'www', show_index=True)])
 
 sio.attach(app)
 
