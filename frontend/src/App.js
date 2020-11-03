@@ -7,6 +7,8 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import recording from './assests/images/record.gif';
 import moment from 'moment';
+import io from 'socket.io-client';
+
 
 const crypto            = require('crypto'); // tot sign our pre-signed URL
 const audioUtils        = require('./assests/libs/audioUtils');  // for encoding audio data as PCM
@@ -19,6 +21,8 @@ const mic               = require('microphone-stream'); // collect microphone in
 
 const THREE = window.THREE
 const HOST = window.HOST
+const SENDVIDEO = false;
+const SENDAUDIO = true;
 
 window.AWS.config.region = 'eu-west-1';
 window.AWS.config.credentials = new AWS.CognitoIdentityCredentials({
@@ -38,7 +42,11 @@ class Streamer {
   transcribeException = false;
   eventStreamMarshaller = new marshaller.EventStreamMarshaller(util_utf8_node.toUtf8, util_utf8_node.fromUtf8);
   capturedText = [];
-
+  videoSocket;
+  captureInterval;
+  capture;
+  imageCapture;
+  sentiments = []
 
   constructor() {
     // our global variables for managing state
@@ -47,18 +55,23 @@ class Streamer {
 
     this.comprehend = new AWS.Comprehend();
 
+
   }
 
-  startStreaming(){
+  startStreaming(options){
+
+    this.setSentimentScore=options.setSentimentScore ? options.setSentimentScore : null;
+    this.sentimentScore=options.sentimentScore ? options.sentimentScore : 0;
+
     // first we get the microphone input from the browser (as a promise)...
     window.navigator.mediaDevices.getUserMedia({
-            video: false,
+            video: true,
             audio: true
         })
         // ...then we convert the mic stream to binary event stream messages when the promise resolves
         .then((userMediaStream)=>{this.streamAudioToWebSocket(userMediaStream)})
         .catch(function (error) {
-          console.error(error, 'There was an error streaming your audio to Amazon Transcribe. Please try again.')
+          console.error(error, 'There was an error streaming your audio and video. Please try again.')
         });
   }
 
@@ -66,6 +79,8 @@ class Streamer {
       //let's get the mic input from the browser, via the microphone-stream module
 
       const self = this;
+
+      // Capturing of Audio
 
       self.micStream = new mic();
 
@@ -99,10 +114,40 @@ class Streamer {
       )};
 
       // handle messages, errors, and close events
-      self.wireSocketEvents();
+      self.wireAudioSocketEvents();
+
+      // Capturing of Video
+      self.capture = new ImageCapture(userMediaStream.getVideoTracks()[0]);
+
+      console.log("Video Stream is ", self.capture.track.readyState)
+
+      self.videoSocket = io('ws://ec2-34-251-228-120.eu-west-1.compute.amazonaws.com:8080')
+
+      const useFrameRate = 1;
+      const imageOptions = {imageWidth: 640, imageHeight: 480};
+      self.videoSocket.on('connect', () => {
+        setTimeout(function(){
+          const send = () => self.capture.takePhoto(imageOptions)
+          .then(blob => {
+            if(SENDVIDEO) self.videoSocket.send(blob);
+          })
+          .catch((err) => {
+            clearInterval(self.captureInterval);
+            if(self.capture.track.enabled){
+              self.capture.track.stop()
+            }
+            console.error("Capturing Video Error", err);
+          });
+          self.captureInterval = setInterval(send ,5000/useFrameRate);
+         }, 6000);
+      });
+
+      // handle messages, errors, and close events
+      self.wireVideoSocketEvents();
+
   }
 
-  wireSocketEvents() {
+  wireAudioSocketEvents() {
       // handle inbound messages from Amazon Transcribe
 
       const self = this;
@@ -137,6 +182,27 @@ class Streamer {
       };
   }
 
+  wireVideoSocketEvents() {
+      // handle inbound messages from Amazon Transcribe
+
+      const self = this;
+
+      self.videoSocket.on('image_path', function (msg) {
+          console.log('image_path_received', msg);
+      })
+
+      self.videoSocket.on('disconnect', () => {
+        clearInterval(self.captureInterval);
+      });
+
+      self.videoSocket.on('error', function (msg) {
+        console.error('videoSocket connection error. Try again.');
+        clearInterval(self.captureInterval);
+      })
+
+  }
+
+
   async handleDetectSentiment(sentence){
 
     const params = {
@@ -154,6 +220,8 @@ class Streamer {
   }
 
   handleEventStreamMessage(messageJson) {
+
+      const self = this;
       let results = messageJson.Transcript.Results;
 
       if (results.length > 0) {
@@ -163,8 +231,7 @@ class Streamer {
               // fix encoding for accented characters
               this.transcript = decodeURIComponent(escape(transcript));
 
-              // update the textarea with the latest result
-              console.log(this.transcription + transcript + "\n");
+              console.log(transcript + "\n");
 
               // if this transcript segment is final, add it to the overall transcription
               if (!results[0].IsPartial) {
@@ -172,7 +239,19 @@ class Streamer {
                   console.log("messageJson", messageJson)
                   this.transcription += transcript + "\n";
                   this.handleDetectSentiment(this.transcript).then((data)=>{
-                    console.log("handleDetectSentiment", data)
+                    let newScore;
+                    const {Sentiment} = data;
+                    console.log("Sentiment", data, Sentiment);
+                    if(Sentiment === "MIXED" || Sentiment === "NEUTRAL") {
+                      newScore = 0;
+                    } else if(Sentiment === "POSITIVE") {
+                      newScore = 1;
+                    } else if(Sentiment === "NEGATIVE") {
+                      newScore = -1;
+                    }
+                    self.sentiments.push(newScore);
+                    let average = (array) => array.reduce((a, b) => a + b) / array.length;
+                    self.setSentimentScore(average(self.sentiments));
                   })
               }
           }
@@ -180,6 +259,7 @@ class Streamer {
   }
 
   closeSocket() {
+      console.log("this.socket", this)
       if (this.socket.readyState === this.socket.OPEN) {
           this.micStream.stop();
 
@@ -187,6 +267,15 @@ class Streamer {
           let emptyMessage = this.getAudioEventMessage(Buffer.from(new Buffer([])));
           let emptyBuffer = this.eventStreamMarshaller.marshall(emptyMessage);
           this.socket.send(emptyBuffer);
+      }
+  }
+
+  closeVideoSocket() {
+      this.videoSocket.disconnect()
+      clearInterval(this.captureInterval);
+
+      if(this.capture.track.enabled){
+        this.capture.track.stop()
       }
   }
 
@@ -937,12 +1026,14 @@ Amplify.configure(awsconfig);
 const renderFn = [];
 const speakers = new Map([['Maya', undefined]]);
 const streamer = new Streamer();
-
+let postiveSupport = false;
+let negativeSupport = false;
 function App() {
 
   const [loaderScreen, setLoaderScreen] = useState(false);
   const [isRecording, setRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
+  const [sentimentScore, setSentimentScore] = useState(0);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -953,7 +1044,22 @@ function App() {
     return () => clearInterval(interval);
   }, [isRecording]);
 
+
+  useEffect(() => {
+    const {name, host} = getCurrentHost(speakers);
+    if(host) {
+      if(sentimentScore > 0.7 && sentimentScore < 1 && !postiveSupport) {
+        host.TextToSpeechFeature.play("Wow. You are so positive!")
+        postiveSupport = true;
+      } else if(sentimentScore < 0 && !postiveSupport) {
+        host.TextToSpeechFeature.play("Cheer up. Why so negative?")
+        negativeSupport = true;
+      }
+    }
+  }, [sentimentScore]);
+
   const [startButtonText, setStartButtonText] = useState("Start your diary session");
+
   function handleClick(e) {
     e.preventDefault();
 
@@ -966,7 +1072,10 @@ function App() {
       setRecordingTime(0)
       setRecording(true)
       setStartButtonText("Stop your diary session")
-      streamer.startStreaming()
+      streamer.startStreaming({
+       setSentimentScore:setSentimentScore,
+       sentimentScore:sentimentScore
+      })
 
       host.TextToSpeechFeature.play(speechInput).then(response => {
         console.log("Completed");
@@ -976,6 +1085,7 @@ function App() {
 
     } else {
       streamer.closeSocket();
+      streamer.closeVideoSocket();
       setRecording(false)
       setStartButtonText("Start your diary session")
       host.TextToSpeechFeature.stop();
@@ -1002,6 +1112,7 @@ function App() {
           {startButtonText}
         </button>
         <p>Recording time: {getMinutesAndSeconds(recordingTime)}</p>
+        <p>Sentiment Score: {sentimentScore.toFixed(2)}</p>
       </div>
       }
       {(loaderScreen && isRecording) &&
