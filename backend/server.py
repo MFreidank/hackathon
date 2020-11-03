@@ -6,7 +6,9 @@ from datetime import datetime
 import socketio
 
 from aiohttp import web
-from aio_timers import Timer
+
+from PIL import Image, ImageMode
+import io
 
 connected = False
 counter = 0
@@ -27,20 +29,6 @@ async def connect(sid, environ):
     print('connect ', sid)
     connected = True
 
-    Timer(1, send_count, callback_async=True)
-
-async def send_count():
-
-    global counter
-
-    if connected is True:
-
-        await sio.emit('send_count', counter)
-        print('sent count: ', counter)
-        counter = counter + 1
-
-        Timer(1, send_count, callback_async=True)
-
 @sio.event
 def disconnect(sid):
 
@@ -53,11 +41,18 @@ def disconnect(sid):
 async def print_message(sid, message):
 
     print("Socket ID: " , sid)
-    print(message)
 
     timestamp = datetime.timestamp(datetime.now())
 
-    await sio.emit('pong', timestamp)
+    image = Image.open(io.BytesIO(message))
+
+    file_name = str(timestamp) + '.jpg'
+
+    print('received file: ', file_name)
+
+    image.save('/home/ubuntu/github/hackathon/backend/www/data/' + file_name, "JPEG")
+
+    await sio.emit('image_path', 'http://ec2-34-251-228-120.eu-west-1.compute.amazonaws.com:8080/app/data/' + file_name)
 
 if __name__ == '__main__':
     web.run_app(app)
