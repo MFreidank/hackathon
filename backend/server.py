@@ -9,7 +9,7 @@ from aio_timers import Timer
 connected = False
 counter = 0
 
-sio = socketio.AsyncServer()
+sio = socketio.AsyncServer(cors_allowed_origins='*')
 
 app = web.Application()
 
