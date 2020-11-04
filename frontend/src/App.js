@@ -8,6 +8,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import recording from './assests/images/record.gif';
 import moment from 'moment';
 import io from 'socket.io-client';
+import hark from 'hark';
 import { Sparklines, SparklinesLine } from 'react-sparklines';
 
 
@@ -30,9 +31,6 @@ window.AWS.config.credentials = new AWS.CognitoIdentityCredentials({
   IdentityPoolId: 'eu-west-1:292b851e-196b-4148-b7fd-ad6c711be793',
 });
 
-
-console.log("window.AWS.config.credentials", window.AWS.config.credentials)
-
 class Streamer {
 
   inputSampleRate;
@@ -47,6 +45,7 @@ class Streamer {
   captureInterval;
   capture;
   imageCapture;
+  isSpeaking = false;
   sentiments = []
 
   constructor() {
@@ -63,8 +62,8 @@ class Streamer {
 
     this.setSentimentScore=options.setSentimentScore ? options.setSentimentScore : null;
     this.sentimentScore=options.sentimentScore ? options.sentimentScore : 0;
-    this.sentimentScores= options.sentimentScores ? options.sentimentScores : [];
     this.setSentimentScores= options.setSentimentScores ? options.setSentimentScores : null;
+    this.speakingCallback = options.speakingCallback ? options.speakingCallback : null;
 
     // first we get the microphone input from the browser (as a promise)...
     window.navigator.mediaDevices.getUserMedia({
@@ -94,6 +93,20 @@ class Streamer {
 
       self.micStream.setStream(userMediaStream);
 
+      var speechEvents = hark(userMediaStream, {});
+
+      speechEvents.on('speaking', function() {
+        console.log('speaking');
+        self.isSpeaking = true;
+        self.speakingCallback(self.isSpeaking)
+      });
+
+      speechEvents.on('stopped_speaking', function() {
+        console.log('stopped_speaking');
+        self.isSpeaking = false;
+        self.speakingCallback(self.isSpeaking)
+      });
+
 
       // Pre-signed URLs are a way to authenticate a request (or WebSocket connection, in this case)
       // via Query Parameters. Learn more: https://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-query-string-auth.html
@@ -122,7 +135,7 @@ class Streamer {
       // Capturing of Video
       self.capture = new ImageCapture(userMediaStream.getVideoTracks()[0]);
 
-      console.log("Video Stream is ", self.capture.track.readyState)
+      console.log("Video Stream is", self.capture.track.readyState)
 
       self.videoSocket = io('ws://ec2-34-251-228-120.eu-west-1.compute.amazonaws.com:8080')
 
@@ -239,12 +252,10 @@ class Streamer {
               // if this transcript segment is final, add it to the overall transcription
               if (!results[0].IsPartial) {
                   //scroll the textarea down
-                  console.log("messageJson", messageJson)
                   this.transcription += transcript + "\n";
                   this.handleDetectSentiment(this.transcript).then((data)=>{
                     let newScore;
                     const {Sentiment} = data;
-                    console.log("Sentiment", data, Sentiment);
                     if(Sentiment === "MIXED" || Sentiment === "NEUTRAL") {
                       newScore = 0.5;
                     } else if(Sentiment === "POSITIVE") {
@@ -261,7 +272,6 @@ class Streamer {
   }
 
   closeSocket() {
-      console.log("this.socket", this)
       if (this.socket.readyState === this.socket.OPEN) {
           this.micStream.stop();
 
@@ -1023,13 +1033,57 @@ function getMinutesAndSeconds(seconds){
          ((minAndSec[1] < 10) ? '0' + minAndSec[1] : minAndSec[1])+"s"
 }
 
+function getRandomNumberBetween(min,max){
+    return Math.floor(Math.random()*(max-min+1)+min);
+}
+
+let sentences = {
+  "neutral": [
+        {text:"hmm. You are so quiet! What is the matter?", gesture:"bored"},
+        {text:"umm. Do you want to talk more?", gesture:""},
+        {text:"There is much to say. Anything you want talk about?", gesture:""},
+  ],
+  "negative":[
+        {text:"hmm. Are you ok? Let's stay positive?", gesture:"cheer"},
+        {text:"Cheer up. Why so negative?", gesture:""}
+  ],
+  "positive":[
+        {text:"hmm. You are so quiet! What is the matter? Lost your tongue?", gesture:""},
+        {text:"Wow. You are so positive!", gesture:"applause"}
+  ]
+}
+
+
+function conversation(host, sentimentScore){
+
+  if(host) {
+    if(sentimentScore > 0.65 && sentimentScore < 1 && sentences.positive.length > 0) {
+      if(sentences.positive[0].gesture !== ""){
+        host.GestureFeature.playGesture('Emote', sentences.positive[0].gesture);
+      }
+      host.TextToSpeechFeature.play(sentences.positive[0].text)
+      sentences.positive.shift();
+    } else if(sentimentScore < 0.5 && sentimentScore > 0 && sentences.negative.length > 0) {
+      if(sentences.negative[0].gesture !== ""){
+        host.GestureFeature.playGesture('Emote', sentences.negative[0].gesture);
+      }
+      host.TextToSpeechFeature.play(sentences.negative[0].text)
+      sentences.negative.shift();
+    } else if(sentences.neutral.length > 0){
+      if(sentences.neutral[0].gesture !== ""){
+        host.GestureFeature.playGesture('Emote', sentences.neutral[0].gesture);
+      }
+      host.TextToSpeechFeature.play(sentences.neutral[0].text)
+      sentences.neutral.shift();
+    }
+  }
+}
+
 Amplify.configure(awsconfig);
 
 const renderFn = [];
 const speakers = new Map([['Maya', undefined]]);
 const streamer = new Streamer();
-let postiveSupport = false;
-let negativeSupport = false;
 function App() {
 
   const [loaderScreen, setLoaderScreen] = useState(false);
@@ -1037,6 +1091,8 @@ function App() {
   const [recordingTime, setRecordingTime] = useState(0);
   const [sentimentScore, setSentimentScore] = useState(0);
   const [sentimentScores, setSentimentScores] = useState([]);
+  const [speaking, setSpeaking] = useState(false);
+  const [introCompleted, setIntroCompleted] = useState(false);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -1047,6 +1103,24 @@ function App() {
     return () => clearInterval(interval);
   }, [isRecording]);
 
+
+  useEffect(() => {
+    let counter = 0;
+    let interval;
+    if(speaking) {
+      clearTimeout(interval);
+    } else {
+      if(introCompleted){
+        interval = setTimeout(() => {
+          if(!speaking && isRecording) {
+            const { host } = getCurrentHost(speakers);
+            if(host) conversation(host, sentimentScore)
+          }
+        }, getRandomNumberBetween(7500,12000));
+      }
+    }
+    return () => clearTimeout(interval);
+  }, [speaking, introCompleted]);
 
   useEffect(() => {
     let average = (array) => {
@@ -1060,22 +1134,10 @@ function App() {
     };
 
     const avg = average(sentimentScores)
-    console.log("avg", avg, sentimentScores)
     setSentimentScore(avg);
-  }, [sentimentScores]);
 
-  useEffect(() => {
-    const {name, host} = getCurrentHost(speakers);
-    if(host) {
-      if(sentimentScore > 0.7 && sentimentScore < 1 && !postiveSupport) {
-        host.TextToSpeechFeature.play("Wow. You are so positive!")
-        postiveSupport = true;
-      } else if(sentimentScore < 0 && !postiveSupport) {
-        host.TextToSpeechFeature.play("Cheer up. Why so negative?")
-        negativeSupport = true;
-      }
-    }
-  }, [sentimentScore]);
+
+  }, [sentimentScores]);
 
   const [startButtonText, setStartButtonText] = useState("Start your diary session");
 
@@ -1094,15 +1156,17 @@ function App() {
       streamer.startStreaming({
        setSentimentScore:setSentimentScore,
        sentimentScore:sentimentScore,
-       sentimentScores: sentimentScores,
        setSentimentScores: (data) => {
          setSentimentScores((prevRecords => ([...prevRecords, data])))
 
+       },
+       speakingCallback: (isSpeaking) => {
+         setSpeaking(isSpeaking)
        }
       })
 
       host.TextToSpeechFeature.play(speechInput).then(response => {
-        console.log("Completed");
+        setIntroCompleted(true)
       }).catch(e => {
         console.log("Error TexttoSpeech");
       });
@@ -1138,7 +1202,7 @@ function App() {
         <p>Recording time: {getMinutesAndSeconds(recordingTime)}</p>
         <p>Sentiment Score: {sentimentScore.toFixed(2)}</p>
         <div>
-          <Sparklines data={sentimentScores} limit={5} width={100} height={20} margin={5}>
+          <Sparklines data={sentimentScores} limit={10} width={100} height={20} margin={5}>
             <SparklinesLine color="rgb(0, 142, 174)" />
           </Sparklines>
         </div>
