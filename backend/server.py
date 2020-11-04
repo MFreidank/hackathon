@@ -16,6 +16,7 @@ sio = socketio.AsyncServer(cors_allowed_origins='*')
 
 app = web.Application()
 
+# bugbug disable show_index before we start uploading more files
 app.add_routes([web.static('/app', 'www', show_index=True)])
 
 sio.attach(app)
@@ -49,6 +50,7 @@ async def print_message(sid, message):
 
     print('received file: ', file_name)
 
+    # bugbug save images outside of the web folder structure - should not be accessible
     image.save('www/data/' + file_name, "JPEG")
 
     await sio.emit('image_path', 'http://ec2-34-251-228-120.eu-west-1.compute.amazonaws.com:8080/app/data/' + file_name)
