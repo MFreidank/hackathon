@@ -8,6 +8,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import recording from './assests/images/record.gif';
 import moment from 'moment';
 import io from 'socket.io-client';
+import { Sparklines, SparklinesLine } from 'react-sparklines';
 
 
 const crypto            = require('crypto'); // tot sign our pre-signed URL
@@ -62,6 +63,8 @@ class Streamer {
 
     this.setSentimentScore=options.setSentimentScore ? options.setSentimentScore : null;
     this.sentimentScore=options.sentimentScore ? options.sentimentScore : 0;
+    this.sentimentScores= options.sentimentScores ? options.sentimentScores : [];
+    this.setSentimentScores= options.setSentimentScores ? options.setSentimentScores : null;
 
     // first we get the microphone input from the browser (as a promise)...
     window.navigator.mediaDevices.getUserMedia({
@@ -243,15 +246,14 @@ class Streamer {
                     const {Sentiment} = data;
                     console.log("Sentiment", data, Sentiment);
                     if(Sentiment === "MIXED" || Sentiment === "NEUTRAL") {
-                      newScore = 0;
+                      newScore = 0.5;
                     } else if(Sentiment === "POSITIVE") {
                       newScore = 1;
                     } else if(Sentiment === "NEGATIVE") {
-                      newScore = -1;
+                      newScore = 0;
                     }
-                    self.sentiments.push(newScore);
-                    let average = (array) => array.reduce((a, b) => a + b) / array.length;
-                    self.setSentimentScore(average(self.sentiments));
+
+                    self.setSentimentScores(newScore);
                   })
               }
           }
@@ -1034,6 +1036,7 @@ function App() {
   const [isRecording, setRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [sentimentScore, setSentimentScore] = useState(0);
+  const [sentimentScores, setSentimentScores] = useState([]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -1044,6 +1047,22 @@ function App() {
     return () => clearInterval(interval);
   }, [isRecording]);
 
+
+  useEffect(() => {
+    let average = (array) => {
+      var i = 0, sum = 0, len = array.length;
+      if(array.length > 0) {
+        while (i < len) {
+            sum = sum + array[i++];
+        }
+        return sum / len;
+      } else return 0;
+    };
+
+    const avg = average(sentimentScores)
+    console.log("avg", avg, sentimentScores)
+    setSentimentScore(avg);
+  }, [sentimentScores]);
 
   useEffect(() => {
     const {name, host} = getCurrentHost(speakers);
@@ -1074,7 +1093,12 @@ function App() {
       setStartButtonText("Stop your diary session")
       streamer.startStreaming({
        setSentimentScore:setSentimentScore,
-       sentimentScore:sentimentScore
+       sentimentScore:sentimentScore,
+       sentimentScores: sentimentScores,
+       setSentimentScores: (data) => {
+         setSentimentScores((prevRecords => ([...prevRecords, data])))
+
+       }
       })
 
       host.TextToSpeechFeature.play(speechInput).then(response => {
@@ -1113,6 +1137,11 @@ function App() {
         </button>
         <p>Recording time: {getMinutesAndSeconds(recordingTime)}</p>
         <p>Sentiment Score: {sentimentScore.toFixed(2)}</p>
+        <div>
+          <Sparklines data={sentimentScores} limit={5} width={100} height={20} margin={5}>
+            <SparklinesLine color="rgb(0, 142, 174)" />
+          </Sparklines>
+        </div>
       </div>
       }
       {(loaderScreen && isRecording) &&
