@@ -6,6 +6,7 @@ import AWS from 'aws-sdk';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import recording from './assests/images/record.gif';
+import useKeyPress from './hooks/useKeyPress.js';
 import moment from 'moment';
 import io from 'socket.io-client';
 import hark from 'hark';
@@ -23,7 +24,7 @@ const mic               = require('microphone-stream'); // collect microphone in
 
 const THREE = window.THREE
 const HOST = window.HOST
-const SENDVIDEO = false;
+const SENDVIDEO = true;
 const SENDAUDIO = true;
 
 window.AWS.config.region = 'eu-west-1';
@@ -64,6 +65,7 @@ class Streamer {
     this.sentimentScore=options.sentimentScore ? options.sentimentScore : 0;
     this.setSentimentScores= options.setSentimentScores ? options.setSentimentScores : null;
     this.speakingCallback = options.speakingCallback ? options.speakingCallback : null;
+    this.emotionCallback = options.emotionCallback ? options.emotionCallback : null;
 
     // first we get the microphone input from the browser (as a promise)...
     window.navigator.mediaDevices.getUserMedia({
@@ -154,7 +156,7 @@ class Streamer {
             }
             console.error("Capturing Video Error", err);
           });
-          self.captureInterval = setInterval(send ,5000/useFrameRate);
+          self.captureInterval = setInterval(send ,3000/useFrameRate);
          }, 6000);
       });
 
@@ -205,6 +207,25 @@ class Streamer {
 
       self.videoSocket.on('image_path', function (msg) {
           console.log('image_path_received', msg);
+      })
+
+      self.videoSocket.on('detected_emotion', function (msg) {
+          console.log('detected_emotion', msg);
+          if(msg == "neutral"){
+            self.emotionCallback(" 😐")
+          } else if(msg == "happiness"){
+            self.emotionCallback(" 🙂")
+          } else if(msg == "surprise"){
+            self.emotionCallback(" 😮")
+          } else if(msg == "sadness"){
+            self.emotionCallback(" 🙁")
+          } else if(msg == "anger"){
+            self.emotionCallback(" 😤")
+          } else if(msg == "disgust"){
+            self.emotionCallback(" 🤮")
+          } else if(msg == "fear"){
+            self.emotionCallback(" 😨")
+          }
       })
 
       self.videoSocket.on('disconnect', () => {
@@ -1039,17 +1060,17 @@ function getRandomNumberBetween(min,max){
 
 let sentences = {
   "neutral": [
-        {text:"hmm. You are so quiet! What is the matter?", gesture:"bored"},
-        {text:"umm. Do you want to talk more?", gesture:""},
-        {text:"There is much to say. Anything you want talk about?", gesture:""},
+        {text:"<speak>hmm. You are so quiet! What is the matter? </speak>", gesture:"bored"},
+        {text:"<speak>umm. Do you want to talk more? </speak>", gesture:""},
+        {text:"<speak>There is much to say. Anything you want talk about?</speak>", gesture:""},
   ],
   "negative":[
-        {text:"hmm. Are you ok? Let's stay positive?", gesture:"cheer"},
-        {text:"Cheer up. Why so negative?", gesture:""}
+        {text:"<speak>hmm. Are you ok? Let's stay positive?</speak>", gesture:"cheer"},
+        {text:"<speak>Cheer up. Why so negative?</speak>", gesture:""}
   ],
   "positive":[
-        {text:"hmm. You are so quiet! What is the matter? Lost your tongue?", gesture:""},
-        {text:"Wow. You are so positive!", gesture:"applause"}
+        {text:"<speak>hmm. You are so quiet! What is the matter? Lost your tongue?</speak>", gesture:""},
+        {text:"<speak>Wow. You are so positive!</speak>", gesture:"applause"}
   ]
 }
 
@@ -1093,6 +1114,12 @@ function App() {
   const [sentimentScores, setSentimentScores] = useState([]);
   const [speaking, setSpeaking] = useState(false);
   const [introCompleted, setIntroCompleted] = useState(false);
+  const [emotion, setEmotion] = useState("");
+  const [emotions, setEmotions] = useState([]);
+  const startKeyPress = useKeyPress('s');
+  const applauseKeyPress = useKeyPress('a');
+  const boredKeyPress = useKeyPress('b');
+  const cheerKeyPress = useKeyPress('c');
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -1103,6 +1130,51 @@ function App() {
     return () => clearInterval(interval);
   }, [isRecording]);
 
+  useEffect(() => {
+    if(applauseKeyPress){
+      const {host} = getCurrentHost(speakers);
+      if(speakers){
+        host.GestureFeature.playGesture('Emote', "applause");
+        host.TextToSpeechFeature.play("<speak>Well done!</speak>")
+      }
+    }
+  }, [applauseKeyPress]);
+
+  useEffect(() => {
+    if(boredKeyPress){
+      const {host} = getCurrentHost(speakers);
+      if(speakers){
+        host.GestureFeature.playGesture('Emote', "bored");
+        host.TextToSpeechFeature.play("<speak>I'm so bored!</speak>")
+      }
+    }
+  }, [boredKeyPress]);
+
+  useEffect(() => {
+    if(cheerKeyPress){
+      const {host} = getCurrentHost(speakers);
+      if(speakers){
+        host.TextToSpeechFeature.play("<speak>hip hip horay</speak>")
+        host.GestureFeature.playGesture('Emote', "cheer");
+        host.TextToSpeechFeature.play("<speak>hip hip horay</speak>")
+        host.GestureFeature.playGesture('Emote', "cheer");
+      }
+    }
+  }, [cheerKeyPress]);
+
+  useEffect(() => {
+    if(startKeyPress){
+      handleClick()
+    }
+  }, [startKeyPress]);
+
+  useEffect(() => {
+    setEmotions(ele=>{
+      if(ele.length > 5) ele.shift()
+      return ele.concat(emotion)
+    })
+    console.log("emotions", emotions)
+  }, [emotion, emotions]);
 
   useEffect(() => {
     let counter = 0;
@@ -1116,7 +1188,7 @@ function App() {
             const { host } = getCurrentHost(speakers);
             if(host) conversation(host, sentimentScore)
           }
-        }, getRandomNumberBetween(7500,12000));
+        }, getRandomNumberBetween(3000,4500));
       }
     }
     return () => clearTimeout(interval);
@@ -1142,7 +1214,7 @@ function App() {
   const [startButtonText, setStartButtonText] = useState("Start your diary session");
 
   function handleClick(e) {
-    e.preventDefault();
+    if(e) e.preventDefault();
 
     const {name, host} = getCurrentHost(speakers);
     const speechInput = "<speak>Dear Emily. Welcome back to your daily diary session. Let me note the time. It is now "+getTimeAndDate()+". For your convience I will record this session with video and audio. Let's begin. How are you today?</speak>"
@@ -1162,6 +1234,9 @@ function App() {
        },
        speakingCallback: (isSpeaking) => {
          setSpeaking(isSpeaking)
+       },
+       emotionCallback: (emotion) => {
+         setEmotion(emotion)
        }
       })
 
@@ -1201,11 +1276,20 @@ function App() {
         </button>
         <p>Recording time: {getMinutesAndSeconds(recordingTime)}</p>
         <p>Sentiment Score: {sentimentScore.toFixed(2)}</p>
-        <div>
+        <div style={{height:"38px"}}>
           <Sparklines data={sentimentScores} limit={10} width={100} height={20} margin={5}>
             <SparklinesLine color="rgb(0, 142, 174)" />
           </Sparklines>
         </div>
+        <div>
+          <p style={{margin:0}}>Emotion Score: <span className="emoji">{emotion}</span></p>
+        </div>
+          <p className="emojihistory">{emotions.map((value, index) => (
+              <span key={index}>
+              {value}
+              </span>
+            ))}
+          </p>
       </div>
       }
       {(loaderScreen && isRecording) &&
