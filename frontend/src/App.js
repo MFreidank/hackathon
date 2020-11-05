@@ -1156,8 +1156,6 @@ function App() {
       if(speakers){
         host.TextToSpeechFeature.play("<speak>hip hip horay</speak>")
         host.GestureFeature.playGesture('Emote', "cheer");
-        host.TextToSpeechFeature.play("<speak>hip hip horay</speak>")
-        host.GestureFeature.playGesture('Emote', "cheer");
       }
     }
   }, [cheerKeyPress]);
