@@ -125,7 +125,6 @@ class Streamer {
           self.micStream.on('data', function(rawAudioChunk) {
               // the audio stream is raw audio bytes. Transcribe expects PCM with additional metadata, encoded as binary
               let binary = self.convertAudioToBinaryMessage(rawAudioChunk);
-
               if (self.socket.readyState === self.socket.OPEN)
                   self.socket.send(binary);
           }
@@ -1059,44 +1058,46 @@ function getRandomNumberBetween(min,max){
 }
 
 let sentences = {
-  "neutral": [
-        {text:"<speak>hmm. You are so quiet! What is the matter? </speak>", gesture:"bored"},
-        {text:"<speak>umm. Do you want to talk more? </speak>", gesture:""},
-        {text:"<speak>There is much to say. Anything you want talk about?</speak>", gesture:""},
-  ],
   "negative":[
-        {text:"<speak>hmm. Are you ok? Let's stay positive?</speak>", gesture:"cheer"},
-        {text:"<speak>Cheer up. Why so negative?</speak>", gesture:""}
+        {text:"<speak>It’s great to hear that you are starting to feel better. Can you tell me a bit more about what you did differently?</speak>", gesture:""},
+        {text:"<speak>Great. How are your FEV1 and Peak Flow today? Did you record it?</speak>", gesture:""},
+        {text:"<speak>OK. Remember to check in with me even when you are feeling well. It is important to identify what triggers good days!  Talk to you soon. Goodbye!</speak>", gesture:""},
   ],
   "positive":[
-        {text:"<speak>hmm. You are so quiet! What is the matter? Lost your tongue?</speak>", gesture:""},
-        {text:"<speak>Wow. You are so positive!</speak>", gesture:"applause"}
+    {text:"<speak>It’s great to hear that you are starting to feel better. Can you tell me a bit more about what you did differently?</speak>", gesture:""},
+    {text:"<speak>Great. How are your FEV1 and Peak Flow today? Did you record it?</speak>", gesture:""},
+    {text:"<speak>OK. Remember to check in with me even when you are feeling well. It is important to identify what triggers good days!  Talk to you soon. Goodbye!</speak>", gesture:""},
   ]
 }
 
 
-function conversation(host, sentimentScore){
 
+function conversation(host, sentimentScore){
+  let questionAsked = false;
   if(host) {
-    if(sentimentScore > 0.65 && sentimentScore < 1 && sentences.positive.length > 0) {
+    if(sentimentScore >= 0.6 && sentimentScore <= 1 && sentences.positive.length > 0) {
+      console.log("Positive sentiment score", sentimentScore)
       if(sentences.positive[0].gesture !== ""){
         host.GestureFeature.playGesture('Emote', sentences.positive[0].gesture);
       }
-      host.TextToSpeechFeature.play(sentences.positive[0].text)
-      sentences.positive.shift();
+      host.TextToSpeechFeature.play(sentences.positive[0].text).then(()=>{
+      })
+      questionAsked=true;
     } else if(sentimentScore < 0.5 && sentimentScore > 0 && sentences.negative.length > 0) {
+      console.log("Negative sentiment score", sentimentScore)
       if(sentences.negative[0].gesture !== ""){
         host.GestureFeature.playGesture('Emote', sentences.negative[0].gesture);
       }
-      host.TextToSpeechFeature.play(sentences.negative[0].text)
-      sentences.negative.shift();
-    } else if(sentences.neutral.length > 0){
-      if(sentences.neutral[0].gesture !== ""){
-        host.GestureFeature.playGesture('Emote', sentences.neutral[0].gesture);
-      }
-      host.TextToSpeechFeature.play(sentences.neutral[0].text)
-      sentences.neutral.shift();
+      host.TextToSpeechFeature.play(sentences.negative[0].text).then(()=>{
+      })
+      questionAsked=true;
     }
+    if(questionAsked){
+      sentences.positive.shift();
+      sentences.negative.shift();
+    }
+
+
   }
 }
 
@@ -1105,14 +1106,15 @@ Amplify.configure(awsconfig);
 const renderFn = [];
 const speakers = new Map([['Maya', undefined]]);
 const streamer = new Streamer();
+let speaking = false;
+let waitingOnAnswer = false;
 function App() {
 
   const [loaderScreen, setLoaderScreen] = useState(false);
   const [isRecording, setRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
-  const [sentimentScore, setSentimentScore] = useState(0);
+  const [sentimentScore, setSentimentScore] = useState(0.5);
   const [sentimentScores, setSentimentScores] = useState([]);
-  const [speaking, setSpeaking] = useState(false);
   const [introCompleted, setIntroCompleted] = useState(false);
   const [emotion, setEmotion] = useState("");
   const [emotions, setEmotions] = useState([]);
@@ -1120,6 +1122,7 @@ function App() {
   const applauseKeyPress = useKeyPress('a');
   const boredKeyPress = useKeyPress('b');
   const cheerKeyPress = useKeyPress('c');
+
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -1171,26 +1174,23 @@ function App() {
       if(ele.length > 5) ele.shift()
       return ele.concat(emotion)
     })
-    console.log("emotions", emotions)
-  }, [emotion, emotions]);
+  }, [emotion]);
 
   useEffect(() => {
     let counter = 0;
     let interval;
-    if(speaking) {
+    if(speaking || !isRecording) {
       clearTimeout(interval);
     } else {
-      if(introCompleted){
+      if(introCompleted && !speaking && isRecording){
         interval = setTimeout(() => {
-          if(!speaking && isRecording) {
-            const { host } = getCurrentHost(speakers);
-            if(host) conversation(host, sentimentScore)
-          }
-        }, getRandomNumberBetween(3000,4500));
+          const { host } = getCurrentHost(speakers);
+          if(host) conversation(host, sentimentScore)
+        }, getRandomNumberBetween(3500,4000));
       }
     }
     return () => clearTimeout(interval);
-  }, [speaking, introCompleted]);
+  }, [introCompleted, isRecording, sentimentScore]);
 
   useEffect(() => {
     let average = (array) => {
@@ -1200,46 +1200,45 @@ function App() {
             sum = sum + array[i++];
         }
         return sum / len;
-      } else return 0;
+      } else return 0.5;
     };
 
     const avg = average(sentimentScores)
     setSentimentScore(avg);
-
-
   }, [sentimentScores]);
 
-  const [startButtonText, setStartButtonText] = useState("Start your diary session");
+  const [startButtonText, setStartButtonText] = useState("Start session");
 
   function handleClick(e) {
     if(e) e.preventDefault();
 
     const {name, host} = getCurrentHost(speakers);
-    const speechInput = "<speak>Dear Emily. Welcome back to your daily diary session. Let me note the time. It is now "+getTimeAndDate()+". For your convience I will record this session with video and audio. Let's begin. How are you today?</speak>"
+    const speechInput = "<speak>Good afternoon Pat, Welcome back! It is now "+getTimeAndDate()+". Last time we spoke, you mentioned that your asthma symptoms were getting worse. How do you feel today?</speak>"
 
     const emotes = host.AnimationFeature.getAnimations('Emote');
 
     if(!isRecording) {
       setRecordingTime(0)
       setRecording(true)
-      setStartButtonText("Stop your diary session")
+      setStartButtonText("Stop session")
       streamer.startStreaming({
        setSentimentScore:setSentimentScore,
        sentimentScore:sentimentScore,
        setSentimentScores: (data) => {
          setSentimentScores((prevRecords => ([...prevRecords, data])))
-
+         console.log("SentimentScores", data)
        },
        speakingCallback: (isSpeaking) => {
-         setSpeaking(isSpeaking)
+         speaking = isSpeaking
        },
        emotionCallback: (emotion) => {
          setEmotion(emotion)
-       }
+       },
       })
 
       host.TextToSpeechFeature.play(speechInput).then(response => {
-        setIntroCompleted(true)
+        setIntroCompleted(true);
+        waitingOnAnswer = true;
       }).catch(e => {
         console.log("Error TexttoSpeech");
       });
@@ -1248,7 +1247,7 @@ function App() {
       streamer.closeSocket();
       streamer.closeVideoSocket();
       setRecording(false)
-      setStartButtonText("Start your diary session")
+      setStartButtonText("Start session")
       host.TextToSpeechFeature.stop();
 
     }
@@ -1269,7 +1268,7 @@ function App() {
       }
       {loaderScreen &&
       <div id="startTalking">
-        <button onClick={handleClick} className="speechButton">
+        <button onClick={handleClick} className={isRecording ? 'speechButton started' : 'speechButton'}>
           {startButtonText}
         </button>
         <p>Recording time: {getMinutesAndSeconds(recordingTime)}</p>
@@ -1290,9 +1289,15 @@ function App() {
           </p>
       </div>
       }
-      {(loaderScreen && isRecording) &&
+      {(loaderScreen && isRecording && speaking) &&
       <div id="recording">
-        <img src={recording} alt="recording" />
+        <div className="spinner">
+          <div className="rect1"></div>
+          <div className="rect2"></div>
+          <div className="rect3"></div>
+          <div className="rect4"></div>
+          <div className="rect5"></div>
+        </div>
       </div>
       }
     </div>
