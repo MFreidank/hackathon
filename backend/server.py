@@ -29,6 +29,7 @@ sio = socketio.AsyncServer(cors_allowed_origins='*')
 
 app = web.Application()
 
+# bugbug disable show_index before we start uploading more files
 app.add_routes([web.static('/app', 'www', show_index=True)])
 
 sio.attach(app)

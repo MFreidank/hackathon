@@ -6,8 +6,11 @@ import AWS from 'aws-sdk';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import recording from './assests/images/record.gif';
+import useKeyPress from './hooks/useKeyPress.js';
 import moment from 'moment';
 import io from 'socket.io-client';
+import hark from 'hark';
+import { Sparklines, SparklinesLine } from 'react-sparklines';
 
 
 const crypto            = require('crypto'); // tot sign our pre-signed URL
@@ -21,16 +24,13 @@ const mic               = require('microphone-stream'); // collect microphone in
 
 const THREE = window.THREE
 const HOST = window.HOST
-const SENDVIDEO = false;
+const SENDVIDEO = true;
 const SENDAUDIO = true;
 
 window.AWS.config.region = 'eu-west-1';
 window.AWS.config.credentials = new AWS.CognitoIdentityCredentials({
   IdentityPoolId: 'eu-west-1:292b851e-196b-4148-b7fd-ad6c711be793',
 });
-
-
-console.log("window.AWS.config.credentials", window.AWS.config.credentials)
 
 class Streamer {
 
@@ -46,6 +46,7 @@ class Streamer {
   captureInterval;
   capture;
   imageCapture;
+  isSpeaking = false;
   sentiments = []
 
   constructor() {
@@ -62,6 +63,9 @@ class Streamer {
 
     this.setSentimentScore=options.setSentimentScore ? options.setSentimentScore : null;
     this.sentimentScore=options.sentimentScore ? options.sentimentScore : 0;
+    this.setSentimentScores= options.setSentimentScores ? options.setSentimentScores : null;
+    this.speakingCallback = options.speakingCallback ? options.speakingCallback : null;
+    this.emotionCallback = options.emotionCallback ? options.emotionCallback : null;
 
     // first we get the microphone input from the browser (as a promise)...
     window.navigator.mediaDevices.getUserMedia({
@@ -91,6 +95,20 @@ class Streamer {
 
       self.micStream.setStream(userMediaStream);
 
+      var speechEvents = hark(userMediaStream, {});
+
+      speechEvents.on('speaking', function() {
+        console.log('speaking');
+        self.isSpeaking = true;
+        self.speakingCallback(self.isSpeaking)
+      });
+
+      speechEvents.on('stopped_speaking', function() {
+        console.log('stopped_speaking');
+        self.isSpeaking = false;
+        self.speakingCallback(self.isSpeaking)
+      });
+
 
       // Pre-signed URLs are a way to authenticate a request (or WebSocket connection, in this case)
       // via Query Parameters. Learn more: https://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-query-string-auth.html
@@ -107,7 +125,6 @@ class Streamer {
           self.micStream.on('data', function(rawAudioChunk) {
               // the audio stream is raw audio bytes. Transcribe expects PCM with additional metadata, encoded as binary
               let binary = self.convertAudioToBinaryMessage(rawAudioChunk);
-
               if (self.socket.readyState === self.socket.OPEN)
                   self.socket.send(binary);
           }
@@ -119,7 +136,7 @@ class Streamer {
       // Capturing of Video
       self.capture = new ImageCapture(userMediaStream.getVideoTracks()[0]);
 
-      console.log("Video Stream is ", self.capture.track.readyState)
+      console.log("Video Stream is", self.capture.track.readyState)
 
       self.videoSocket = io('ws://ec2-34-251-228-120.eu-west-1.compute.amazonaws.com:8080')
 
@@ -138,7 +155,7 @@ class Streamer {
             }
             console.error("Capturing Video Error", err);
           });
-          self.captureInterval = setInterval(send ,5000/useFrameRate);
+          self.captureInterval = setInterval(send ,3000/useFrameRate);
          }, 6000);
       });
 
@@ -191,6 +208,25 @@ class Streamer {
           console.log('image_path_received', msg);
       })
 
+      self.videoSocket.on('detected_emotion', function (msg) {
+          console.log('detected_emotion', msg);
+          if(msg == "neutral"){
+            self.emotionCallback(" 😐")
+          } else if(msg == "happiness"){
+            self.emotionCallback(" 🙂")
+          } else if(msg == "surprise"){
+            self.emotionCallback(" 😮")
+          } else if(msg == "sadness"){
+            self.emotionCallback(" 🙁")
+          } else if(msg == "anger"){
+            self.emotionCallback(" 😤")
+          } else if(msg == "disgust"){
+            self.emotionCallback(" 🤮")
+          } else if(msg == "fear"){
+            self.emotionCallback(" 😨")
+          }
+      })
+
       self.videoSocket.on('disconnect', () => {
         clearInterval(self.captureInterval);
       });
@@ -236,22 +272,19 @@ class Streamer {
               // if this transcript segment is final, add it to the overall transcription
               if (!results[0].IsPartial) {
                   //scroll the textarea down
-                  console.log("messageJson", messageJson)
                   this.transcription += transcript + "\n";
                   this.handleDetectSentiment(this.transcript).then((data)=>{
                     let newScore;
                     const {Sentiment} = data;
-                    console.log("Sentiment", data, Sentiment);
                     if(Sentiment === "MIXED" || Sentiment === "NEUTRAL") {
-                      newScore = 0;
+                      newScore = 0.5;
                     } else if(Sentiment === "POSITIVE") {
                       newScore = 1;
                     } else if(Sentiment === "NEGATIVE") {
-                      newScore = -1;
+                      newScore = 0;
                     }
-                    self.sentiments.push(newScore);
-                    let average = (array) => array.reduce((a, b) => a + b) / array.length;
-                    self.setSentimentScore(average(self.sentiments));
+
+                    self.setSentimentScores(newScore);
                   })
               }
           }
@@ -259,7 +292,6 @@ class Streamer {
   }
 
   closeSocket() {
-      console.log("this.socket", this)
       if (this.socket.readyState === this.socket.OPEN) {
           this.micStream.stop();
 
@@ -1021,19 +1053,76 @@ function getMinutesAndSeconds(seconds){
          ((minAndSec[1] < 10) ? '0' + minAndSec[1] : minAndSec[1])+"s"
 }
 
+function getRandomNumberBetween(min,max){
+    return Math.floor(Math.random()*(max-min+1)+min);
+}
+
+let sentences = {
+  "negative":[
+        {text:"<speak>It’s great to hear that you are starting to feel better. Can you tell me a bit more about what you did differently?</speak>", gesture:""},
+        {text:"<speak>Great. How are your FEV1 and Peak Flow today? Did you record it?</speak>", gesture:""},
+        {text:"<speak>OK. Remember to check in with me even when you are feeling well. It is important to identify what triggers good days!  Talk to you soon. Goodbye!</speak>", gesture:""},
+  ],
+  "positive":[
+    {text:"<speak>It’s great to hear that you are starting to feel better. Can you tell me a bit more about what you did differently?</speak>", gesture:""},
+    {text:"<speak>Great. How are your FEV1 and Peak Flow today? Did you record it?</speak>", gesture:""},
+    {text:"<speak>OK. Remember to check in with me even when you are feeling well. It is important to identify what triggers good days!  Talk to you soon. Goodbye!</speak>", gesture:""},
+  ]
+}
+
+
+
+function conversation(host, sentimentScore){
+  let questionAsked = false;
+  if(host) {
+    if(sentimentScore >= 0.6 && sentimentScore <= 1 && sentences.positive.length > 0) {
+      console.log("Positive sentiment score", sentimentScore)
+      if(sentences.positive[0].gesture !== ""){
+        host.GestureFeature.playGesture('Emote', sentences.positive[0].gesture);
+      }
+      host.TextToSpeechFeature.play(sentences.positive[0].text).then(()=>{
+      })
+      questionAsked=true;
+    } else if(sentimentScore < 0.5 && sentimentScore > 0 && sentences.negative.length > 0) {
+      console.log("Negative sentiment score", sentimentScore)
+      if(sentences.negative[0].gesture !== ""){
+        host.GestureFeature.playGesture('Emote', sentences.negative[0].gesture);
+      }
+      host.TextToSpeechFeature.play(sentences.negative[0].text).then(()=>{
+      })
+      questionAsked=true;
+    }
+    if(questionAsked){
+      sentences.positive.shift();
+      sentences.negative.shift();
+    }
+
+
+  }
+}
+
 Amplify.configure(awsconfig);
 
 const renderFn = [];
 const speakers = new Map([['Maya', undefined]]);
 const streamer = new Streamer();
-let postiveSupport = false;
-let negativeSupport = false;
+let speaking = false;
+let waitingOnAnswer = false;
 function App() {
 
   const [loaderScreen, setLoaderScreen] = useState(false);
   const [isRecording, setRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
-  const [sentimentScore, setSentimentScore] = useState(0);
+  const [sentimentScore, setSentimentScore] = useState(0.5);
+  const [sentimentScores, setSentimentScores] = useState([]);
+  const [introCompleted, setIntroCompleted] = useState(false);
+  const [emotion, setEmotion] = useState("");
+  const [emotions, setEmotions] = useState([]);
+  const startKeyPress = useKeyPress('s');
+  const applauseKeyPress = useKeyPress('a');
+  const boredKeyPress = useKeyPress('b');
+  const cheerKeyPress = useKeyPress('c');
+
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -1044,41 +1133,112 @@ function App() {
     return () => clearInterval(interval);
   }, [isRecording]);
 
-
   useEffect(() => {
-    const {name, host} = getCurrentHost(speakers);
-    if(host) {
-      if(sentimentScore > 0.7 && sentimentScore < 1 && !postiveSupport) {
-        host.TextToSpeechFeature.play("Wow. You are so positive!")
-        postiveSupport = true;
-      } else if(sentimentScore < 0 && !postiveSupport) {
-        host.TextToSpeechFeature.play("Cheer up. Why so negative?")
-        negativeSupport = true;
+    if(applauseKeyPress){
+      const {host} = getCurrentHost(speakers);
+      if(speakers){
+        host.GestureFeature.playGesture('Emote', "applause");
+        host.TextToSpeechFeature.play("<speak>Well done!</speak>")
       }
     }
-  }, [sentimentScore]);
+  }, [applauseKeyPress]);
 
-  const [startButtonText, setStartButtonText] = useState("Start your diary session");
+  useEffect(() => {
+    if(boredKeyPress){
+      const {host} = getCurrentHost(speakers);
+      if(speakers){
+        host.GestureFeature.playGesture('Emote', "bored");
+        host.TextToSpeechFeature.play("<speak>I'm so bored!</speak>")
+      }
+    }
+  }, [boredKeyPress]);
+
+  useEffect(() => {
+    if(cheerKeyPress){
+      const {host} = getCurrentHost(speakers);
+      if(speakers){
+        host.TextToSpeechFeature.play("<speak>hip hip horay</speak>")
+        host.GestureFeature.playGesture('Emote', "cheer");
+      }
+    }
+  }, [cheerKeyPress]);
+
+  useEffect(() => {
+    if(startKeyPress){
+      handleClick()
+    }
+  }, [startKeyPress]);
+
+  useEffect(() => {
+    setEmotions(ele=>{
+      if(ele.length > 5) ele.shift()
+      return ele.concat(emotion)
+    })
+  }, [emotion]);
+
+  useEffect(() => {
+    let counter = 0;
+    let interval;
+    if(speaking || !isRecording) {
+      clearTimeout(interval);
+    } else {
+      if(introCompleted && !speaking && isRecording){
+        interval = setTimeout(() => {
+          const { host } = getCurrentHost(speakers);
+          if(host) conversation(host, sentimentScore)
+        }, getRandomNumberBetween(3500,4000));
+      }
+    }
+    return () => clearTimeout(interval);
+  }, [introCompleted, isRecording, sentimentScore]);
+
+  useEffect(() => {
+    let average = (array) => {
+      var i = 0, sum = 0, len = array.length;
+      if(array.length > 0) {
+        while (i < len) {
+            sum = sum + array[i++];
+        }
+        return sum / len;
+      } else return 0.5;
+    };
+
+    const avg = average(sentimentScores)
+    setSentimentScore(avg);
+  }, [sentimentScores]);
+
+  const [startButtonText, setStartButtonText] = useState("Start session");
 
   function handleClick(e) {
-    e.preventDefault();
+    if(e) e.preventDefault();
 
     const {name, host} = getCurrentHost(speakers);
-    const speechInput = "<speak>Dear Emily. Welcome back to your daily diary session. Let me note the time. It is now "+getTimeAndDate()+". For your convience I will record this session with video and audio. Let's begin. How are you today?</speak>"
+    const speechInput = "<speak>Good afternoon Pat, Welcome back! It is now "+getTimeAndDate()+". Last time we spoke, you mentioned that your asthma symptoms were getting worse. How do you feel today?</speak>"
 
     const emotes = host.AnimationFeature.getAnimations('Emote');
 
     if(!isRecording) {
       setRecordingTime(0)
       setRecording(true)
-      setStartButtonText("Stop your diary session")
+      setStartButtonText("Stop session")
       streamer.startStreaming({
        setSentimentScore:setSentimentScore,
-       sentimentScore:sentimentScore
+       sentimentScore:sentimentScore,
+       setSentimentScores: (data) => {
+         setSentimentScores((prevRecords => ([...prevRecords, data])))
+         console.log("SentimentScores", data)
+       },
+       speakingCallback: (isSpeaking) => {
+         speaking = isSpeaking
+       },
+       emotionCallback: (emotion) => {
+         setEmotion(emotion)
+       },
       })
 
       host.TextToSpeechFeature.play(speechInput).then(response => {
-        console.log("Completed");
+        setIntroCompleted(true);
+        waitingOnAnswer = true;
       }).catch(e => {
         console.log("Error TexttoSpeech");
       });
@@ -1087,7 +1247,7 @@ function App() {
       streamer.closeSocket();
       streamer.closeVideoSocket();
       setRecording(false)
-      setStartButtonText("Start your diary session")
+      setStartButtonText("Start session")
       host.TextToSpeechFeature.stop();
 
     }
@@ -1108,16 +1268,36 @@ function App() {
       }
       {loaderScreen &&
       <div id="startTalking">
-        <button onClick={handleClick} className="speechButton">
+        <button onClick={handleClick} className={isRecording ? 'speechButton started' : 'speechButton'}>
           {startButtonText}
         </button>
         <p>Recording time: {getMinutesAndSeconds(recordingTime)}</p>
         <p>Sentiment Score: {sentimentScore.toFixed(2)}</p>
+        <div style={{height:"38px"}}>
+          <Sparklines data={sentimentScores} limit={10} width={100} height={20} margin={5}>
+            <SparklinesLine color="rgb(0, 142, 174)" />
+          </Sparklines>
+        </div>
+        <div>
+          <p style={{margin:0}}>Emotion Score: <span className="emoji">{emotion}</span></p>
+        </div>
+          <p className="emojihistory">{emotions.map((value, index) => (
+              <span key={index}>
+              {value}
+              </span>
+            ))}
+          </p>
       </div>
       }
-      {(loaderScreen && isRecording) &&
+      {(loaderScreen && isRecording && speaking) &&
       <div id="recording">
-        <img src={recording} alt="recording" />
+        <div className="spinner">
+          <div className="rect1"></div>
+          <div className="rect2"></div>
+          <div className="rect3"></div>
+          <div className="rect4"></div>
+          <div className="rect5"></div>
+        </div>
       </div>
       }
     </div>
