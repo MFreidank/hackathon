@@ -1,2 +1,3 @@
 backend/www/data/
 backend/.server.py.swp
+__pycache__/
