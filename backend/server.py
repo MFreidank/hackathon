@@ -1,14 +1,27 @@
 # Hack Server
 
 import json
-import time
+from os import path
 from datetime import datetime
 import socketio
+import tempfile
+import time
 
 from aiohttp import web
 
 from PIL import Image, ImageMode
 import io
+
+import emotion_detection
+from emotion_detection.modeling import load_trained_model, MODEL_DIRECTORY
+from emotion_detection.face_detection import NoFaceDetectedError
+
+
+# NOTE: Pre-load model to improve performance
+MODEL = load_trained_model(
+    model_path=path.join(MODEL_DIRECTORY, "FER_trained_model.pt")
+)
+
 
 connected = False
 
@@ -38,6 +51,7 @@ def disconnect(sid):
 
 @sio.on('message')
 async def print_message(sid, message):
+    global MODEL
 
     print("Socket ID: " , sid)
 
@@ -45,13 +59,25 @@ async def print_message(sid, message):
 
     image = Image.open(io.BytesIO(message))
 
-    file_name = str(timestamp) + '.jpg'
+    with tempfile.NamedTemporaryFile(suffix=".jpg") as temp_file:
+        image.save(temp_file.name, "JPEG")
+        print('received file: ', temp_file.name)
 
-    print('received file: ', file_name)
+        await sio.emit('image_path', 'http://ec2-34-251-228-120.eu-west-1.compute.amazonaws.com:8080/tmp/' + temp_file.name)
 
-    image.save('www/data/' + file_name, "JPEG")
+        print("Starting emotion detection")
 
-    await sio.emit('image_path', 'http://ec2-34-251-228-120.eu-west-1.compute.amazonaws.com:8080/app/data/' + file_name)
+        try:
+            detected_emotion, detection_confidence = emotion_detection.detect_from_image_file(
+                img_path=temp_file.name
+                model=MODEL,
+            )
+        except NoFaceDetectedError:  # NOTE: Could not reliably detect face in the given image frame
+            print(f"Failed to detect emotion")
+            await sio.emit("detected_emotion", "Failed to detect face")
+        else:
+            print(f"Detected emotion as {detected_emotion}")
+            await sio.emit("detected_emotion", detected_emotion)
 
 if __name__ == '__main__':
     web.run_app(app)
