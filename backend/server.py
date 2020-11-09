@@ -56,15 +56,13 @@ async def print_message(sid, message):
 
     print("Socket ID: " , sid)
 
-    timestamp = datetime.timestamp(datetime.now())
-
     image = Image.open(io.BytesIO(message))
 
     with tempfile.NamedTemporaryFile(suffix=".jpg") as temp_file:
         image.save(temp_file.name, "JPEG")
         print('received file: ', temp_file.name)
 
-        await sio.emit('image_path', 'http://ec2-34-251-228-120.eu-west-1.compute.amazonaws.com:8080/tmp/' + temp_file.name)
+        await sio.emit('image_path', temp_file.name)
 
         print("Starting emotion detection")
 
